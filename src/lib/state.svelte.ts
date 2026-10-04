@@ -1,7 +1,14 @@
 import type { Category, DiscAnalysis, DiscFile, DiscSource, MediaItem } from './types';
 import { analyzeDisc, itemForFile } from './analyze';
 import { refineBySignature } from './sources/common';
-import { pickDirectory, sourceFromDrop, sourceFromFileList, type ScanProgress } from './sources/web';
+import {
+  requestDirectory,
+  sourceFromDrop,
+  sourceFromFileList,
+  sourceFromHandle,
+  ScanAbortedError,
+  type ScanContext,
+} from './sources/web';
 import { nativeSource } from './sources/native';
 import { getNative } from './native';
 import { browserCanShow } from './detect';
@@ -13,7 +20,7 @@ export type ViewMode = 'list' | 'grid';
 class AppState {
   source = $state.raw<DiscSource | null>(null);
   analysis = $state.raw<DiscAnalysis | null>(null);
-  scanning = $state<{ count: number; current: string } | null>(null);
+  scanning = $state<{ count: number; current: string; startedAt: number } | null>(null);
   error = $state<string | null>(null);
 
   filter = $state<Filter>('all');
@@ -51,36 +58,63 @@ class AppState {
     return !!this.query.trim() || this.filter !== 'all';
   }
 
-  private async load(open: (progress: ScanProgress) => Promise<DiscSource | null>) {
+  private scanController: AbortController | null = null;
+
+  private async load(open: (ctx: ScanContext) => Promise<DiscSource | null>) {
+    this.scanController?.abort();
+    const controller = new AbortController();
+    this.scanController = controller;
+    const startedAt = Date.now();
     this.error = null;
-    this.scanning = { count: 0, current: '' };
+    this.scanning = { count: 0, current: '', startedAt };
     let lastPaint = 0;
     try {
-      const source = await open((count, current) => {
-        // Limitamos las actualizaciones de la UI durante el escaneo.
-        const now = performance.now();
-        if (now - lastPaint > 60) {
-          lastPaint = now;
-          this.scanning = { count, current };
-        }
+      const source = await open({
+        signal: controller.signal,
+        onProgress: (count, current) => {
+          // Limitamos las actualizaciones de la UI durante el escaneo.
+          const now = performance.now();
+          if (now - lastPaint > 60) {
+            lastPaint = now;
+            this.scanning = { count, current, startedAt };
+          }
+        },
       });
-      if (!source) return;
+      if (controller.signal.aborted || !source) return;
       if (!source.files.length) throw new Error(t('error.empty'));
-      this.scanning = { count: source.files.length, current: t('scan.analyzing') };
+      this.scanning = { count: source.files.length, current: t('scan.analyzing'), startedAt };
       await refineBySignature(source);
       const analysis = await analyzeDisc(source);
+      if (controller.signal.aborted) return;
       this.close();
       this.source = source;
       this.analysis = analysis;
     } catch (err) {
+      if (err instanceof ScanAbortedError || controller.signal.aborted) return;
       this.error = err instanceof Error && err.message !== 'picker-unsupported' ? err.message : t('error.open');
     } finally {
-      this.scanning = null;
+      if (this.scanController === controller) {
+        this.scanning = null;
+        this.scanController = null;
+      }
     }
   }
 
-  openPicker() {
-    return this.load((p) => pickDirectory(p));
+  /** Cancela la lectura en curso (p. ej. una unidad bloqueada). */
+  cancelScan() {
+    this.scanController?.abort();
+    this.scanController = null;
+    this.scanning = null;
+  }
+
+  async openPicker() {
+    this.error = null;
+    try {
+      const handle = await requestDirectory();
+      if (handle) await this.load((ctx) => sourceFromHandle(handle, ctx));
+    } catch (err) {
+      this.error = err instanceof Error && err.message !== 'picker-unsupported' ? err.message : t('error.open');
+    }
   }
 
   openFileList(list: FileList | File[]) {
@@ -88,15 +122,29 @@ class AppState {
   }
 
   openDrop(dt: DataTransfer) {
-    // sourceFromDrop debe llamarse de forma síncrona dentro del evento drop.
-    const pending = sourceFromDrop(dt, (count, current) => (this.scanning = { count, current }));
-    return this.load(() => pending);
+    // Los handles deben pedirse de forma síncrona dentro del evento drop.
+    let ctxRef: ScanContext = {};
+    const pending = sourceFromDrop(dt, {
+      get signal() {
+        return ctxRef.signal;
+      },
+      onProgress: (count, current) => ctxRef.onProgress?.(count, current),
+    });
+    return this.load((ctx) => {
+      ctxRef = ctx;
+      return pending;
+    });
   }
 
   openNative(root: string) {
     const api = getNative();
     if (!api) return;
-    return this.load(() => nativeSource(api, root));
+    return this.load(({ signal }) =>
+      Promise.race([
+        nativeSource(api, root),
+        new Promise<never>((_, reject) => signal?.addEventListener('abort', () => reject(new ScanAbortedError()), { once: true })),
+      ]),
+    );
   }
 
   close() {

@@ -10,6 +10,35 @@ import { t } from '../i18n/index.svelte';
 
 export type ScanProgress = (count: number, current: string) => void;
 
+export interface ScanContext {
+  onProgress?: ScanProgress;
+  signal?: AbortSignal;
+}
+
+/** Tiempo máximo para obtener un archivo: un sector ilegible puede bloquear la lectura indefinidamente. */
+const FILE_TIMEOUT_MS = 15_000;
+
+export class ScanAbortedError extends Error {
+  constructor() {
+    super('scan-aborted');
+    this.name = 'AbortError';
+  }
+}
+
+/** Compite una promesa contra un timeout y contra la cancelación del usuario. */
+function guard<T>(promise: Promise<T>, signal?: AbortSignal, timeoutMs?: number): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    if (signal?.aborted) return reject(new ScanAbortedError());
+    const onAbort = () => reject(new ScanAbortedError());
+    signal?.addEventListener('abort', onAbort, { once: true });
+    const timer = timeoutMs ? setTimeout(() => reject(new Error('timeout')), timeoutMs) : undefined;
+    promise.then(resolve, reject).finally(() => {
+      clearTimeout(timer);
+      signal?.removeEventListener('abort', onAbort);
+    });
+  });
+}
+
 interface DirHandle {
   kind: 'directory';
   name: string;
@@ -65,41 +94,48 @@ function cleanLabel(name: string): string {
   return name.replace(/[\\/]+$/, '') || name;
 }
 
-async function walkHandle(dir: DirHandle, prefix: string, out: { path: string; file: File }[], onProgress?: ScanProgress) {
-  for await (const entry of dir.values()) {
+async function walkHandle(dir: DirHandle, prefix: string, out: { path: string; file: File }[], ctx: ScanContext) {
+  const iterator = dir.values()[Symbol.asyncIterator]();
+  for (;;) {
+    const { value: entry, done } = await guard(iterator.next(), ctx.signal);
+    if (done) break;
     const path = prefix ? `${prefix}/${entry.name}` : entry.name;
     if (entry.kind === 'directory') {
-      await walkHandle(entry, path, out, onProgress);
-    } else {
-      try {
-        out.push({ path, file: await entry.getFile() });
-        onProgress?.(out.length, path);
-      } catch {
-        // Archivo ilegible (sector dañado o acceso denegado): lo omitimos sin abortar el escaneo.
-      }
+      await walkHandle(entry, path, out, ctx);
+      continue;
+    }
+    try {
+      out.push({ path, file: await guard(entry.getFile(), ctx.signal, FILE_TIMEOUT_MS) });
+      ctx.onProgress?.(out.length, path);
+    } catch (err) {
+      if (err instanceof ScanAbortedError) throw err;
+      // Archivo ilegible o bloqueado (sector dañado, acceso denegado): lo omitimos sin abortar el escaneo.
     }
   }
 }
 
-async function sourceFromHandle(handle: DirHandle, onProgress?: ScanProgress): Promise<DiscSource> {
+export async function sourceFromHandle(handle: DirHandle, ctx: ScanContext = {}): Promise<DiscSource> {
   const entries: { path: string; file: File }[] = [];
-  await walkHandle(handle, '', entries, onProgress);
+  await walkHandle(handle, '', entries, ctx);
   return createSource(cleanLabel(handle.name), entries);
 }
 
-/** Abre el selector de carpetas del sistema. Devuelve null si el usuario cancela. */
-export async function pickDirectory(onProgress?: ScanProgress): Promise<DiscSource | null> {
+/**
+ * Abre el selector de carpetas del sistema (solo lectura). Devuelve null si el usuario cancela.
+ * Se separa del escaneo para no mostrar progreso mientras el diálogo sigue abierto.
+ */
+export async function requestDirectory(): Promise<DirHandle | null> {
   const picker = (window as PickerWindow).showDirectoryPicker;
   if (!picker) throw new Error('picker-unsupported');
-  let handle: DirHandle;
   try {
-    handle = await picker({ mode: 'read', id: 'disclens-disc' });
+    return await picker({ mode: 'read', id: 'disclens-disc' });
   } catch (err) {
     if (err instanceof DOMException && err.name === 'AbortError') return null;
     throw err;
   }
-  return sourceFromHandle(handle, onProgress);
 }
+
+export type { DirHandle };
 
 /** Alternativa para navegadores sin File System Access API. */
 export function sourceFromFileList(list: FileList | File[]): DiscSource | null {
@@ -144,7 +180,8 @@ async function walkLegacy(entry: LegacyEntry, prefix: string, out: { path: strin
   }
 }
 
-export async function sourceFromDrop(dt: DataTransfer, onProgress?: ScanProgress): Promise<DiscSource | null> {
+export async function sourceFromDrop(dt: DataTransfer, ctx: ScanContext = {}): Promise<DiscSource | null> {
+  const { onProgress } = ctx;
   const items = [...dt.items].filter((i) => i.kind === 'file');
   if (!items.length) return null;
 
@@ -158,10 +195,10 @@ export async function sourceFromDrop(dt: DataTransfer, onProgress?: ScanProgress
   if (handles.every(Boolean)) {
     const resolved = await Promise.all(handles);
     const dir = resolved.find((h): h is DirHandle => h?.kind === 'directory');
-    if (dir && resolved.length === 1) return sourceFromHandle(dir, onProgress);
+    if (dir && resolved.length === 1) return sourceFromHandle(dir, ctx);
     const entries: { path: string; file: File }[] = [];
     for (const h of resolved) {
-      if (h?.kind === 'directory') await walkHandle(h, h.name, entries, onProgress);
+      if (h?.kind === 'directory') await walkHandle(h, h.name, entries, ctx);
       else if (h?.kind === 'file') entries.push({ path: h.name, file: await h.getFile() });
     }
     if (entries.length) return createSource(dir ? cleanLabel(dir.name) : t('source.files'), entries);
