@@ -1,0 +1,25 @@
+# dependencias
+node_modules/
+
+# builds
+dist/
+.astro/
+.vercel/
+desktop/app/
+desktop/release/
+
+# entorno
+.env
+.env.*
+!.env.example
+
+# logs
+npm-debug.log*
+*.log
+
+# sistema / editores
+.DS_Store
+Thumbs.db
+.vscode/*
+!.vscode/extensions.json
+.idea/
