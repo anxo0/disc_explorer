@@ -102,7 +102,7 @@ export async function pickDirectory(onProgress?: ScanProgress): Promise<DiscSour
 }
 
 /** Alternativa para navegadores sin File System Access API. */
-export function sourceFromFileList(list: FileList): DiscSource | null {
+export function sourceFromFileList(list: FileList | File[]): DiscSource | null {
   const files = [...list];
   if (!files.length) return null;
   const first = files[0].webkitRelativePath || files[0].name;
@@ -153,6 +153,8 @@ export async function sourceFromDrop(dt: DataTransfer, onProgress?: ScanProgress
   const handles = items.map((i) => (i as ModernItem).getAsFileSystemHandle?.());
   const legacy = items.map((i) => ((i.webkitGetAsEntry?.() ?? null) as unknown as LegacyEntry | null));
 
+  const loose = [...dt.files];
+
   if (handles.every(Boolean)) {
     const resolved = await Promise.all(handles);
     const dir = resolved.find((h): h is DirHandle => h?.kind === 'directory');
@@ -162,7 +164,7 @@ export async function sourceFromDrop(dt: DataTransfer, onProgress?: ScanProgress
       if (h?.kind === 'directory') await walkHandle(h, h.name, entries, onProgress);
       else if (h?.kind === 'file') entries.push({ path: h.name, file: await h.getFile() });
     }
-    return entries.length ? createSource(dir ? cleanLabel(dir.name) : t('source.files'), entries) : null;
+    if (entries.length) return createSource(dir ? cleanLabel(dir.name) : t('source.files'), entries);
   }
 
   const entries: { path: string; file: File }[] = [];
@@ -177,5 +179,7 @@ export async function sourceFromDrop(dt: DataTransfer, onProgress?: ScanProgress
     return createSource(roots[0].name, entries);
   }
   for (const root of roots) await walkLegacy(root, '', entries, onProgress);
+  // Último recurso: archivos sueltos sin estructura de carpetas.
+  if (!entries.length) entries.push(...loose.map((file) => ({ path: file.name, file })));
   return entries.length ? createSource(t('source.files'), entries) : null;
 }

@@ -83,7 +83,7 @@ class AppState {
     return this.load((p) => pickDirectory(p));
   }
 
-  openFileList(list: FileList) {
+  openFileList(list: FileList | File[]) {
     return this.load(() => Promise.resolve(sourceFromFileList(list)));
   }
 
@@ -156,3 +156,8 @@ class AppState {
 }
 
 export const app = new AppState();
+
+if (import.meta.env.DEV && typeof window !== 'undefined') {
+  // Acceso para depuración manual desde la consola (solo en desarrollo).
+  (window as unknown as { __disclens: AppState }).__disclens = app;
+}
