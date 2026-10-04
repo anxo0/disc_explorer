@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import type { DiscFile } from '../lib/types';
+  import type { DiscFile } from '$lib/types';
   import FileIcon from './FileIcon.svelte';
 
   let { file }: { file: DiscFile } = $props();
@@ -14,11 +14,8 @@
       async ([entry]) => {
         if (!entry.isIntersecting) return;
         io.disconnect();
-        try {
-          src = await file.url();
-        } catch {
-          failed = true;
-        }
+        src = await file.url().catch(() => null);
+        failed = !src;
       },
       { rootMargin: '200px' },
     );
@@ -27,32 +24,10 @@
   });
 </script>
 
-<div class="thumb" bind:this={el}>
+<div class="grid size-full place-items-center overflow-hidden" bind:this={el}>
   {#if src && !failed}
-    <img {src} alt="" loading="lazy" decoding="async" onerror={() => (failed = true)} />
+    <img {src} alt="" loading="lazy" decoding="async" class="size-full object-cover animate-in fade-in" onerror={() => (failed = true)} />
   {:else}
-    <FileIcon category={file.category} size={44} />
+    <FileIcon category={file.category} class="size-11" />
   {/if}
 </div>
-
-<style>
-  .thumb {
-    display: grid;
-    place-items: center;
-    width: 100%;
-    height: 100%;
-    overflow: hidden;
-  }
-  img {
-    width: 100%;
-    height: 100%;
-    object-fit: cover;
-    animation: in 0.4s var(--ease-out);
-  }
-  @keyframes in {
-    from {
-      opacity: 0;
-      scale: 1.04;
-    }
-  }
-</style>

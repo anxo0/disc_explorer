@@ -1,0 +1,10 @@
+---
+import Base from '../layouts/Base.astro';
+import ReaderApp from '../components/reader/ReaderApp.svelte';
+
+const downloadUrl = import.meta.env.PUBLIC_DESKTOP_DOWNLOAD_URL ?? 'https://github.com/anxo0/disc_explorer/releases/latest';
+---
+
+<Base title="Lector · DiscLens" description="Explora, reproduce y convierte el contenido de tus discos ópticos.">
+  <ReaderApp client:only="svelte" desktopUrl={downloadUrl} />
+</Base>
