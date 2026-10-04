@@ -1,0 +1,47 @@
+---
+import '../styles/app.css';
+
+interface Props {
+  title: string;
+  description: string;
+}
+const { title, description } = Astro.props;
+---
+
+<!doctype html>
+<html lang="es" class="dark" style="color-scheme: dark">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{title}</title>
+    <meta name="description" content={description} />
+    <meta name="color-scheme" content="dark light" />
+    <meta name="theme-color" content="#0b0c10" />
+    <link rel="icon" href="favicon.svg" type="image/svg+xml" />
+    <meta property="og:type" content="website" />
+    <meta property="og:title" content={title} />
+    <meta property="og:description" content={description} />
+    <meta name="twitter:card" content="summary" />
+    <script is:inline>
+      // Tema e idioma antes del primer pintado (oscuro por defecto).
+      (function () {
+        var root = document.documentElement;
+        try {
+          if (localStorage.getItem('disclens:theme') === 'light') {
+            root.classList.remove('dark');
+            root.style.colorScheme = 'light';
+          }
+          var lang = new URLSearchParams(location.search).get('lang') || localStorage.getItem('disclens:lang');
+          if (!lang) lang = (navigator.language || 'es').toLowerCase().indexOf('es') === 0 ? 'es' : 'en';
+          root.lang = lang === 'en' ? 'en' : 'es';
+        } catch (e) {}
+      })();
+    </script>
+  </head>
+  <body>
+    <slot />
+    <noscript>
+      <p style="padding:2rem;font-family:sans-serif">DiscLens necesita JavaScript. / DiscLens requires JavaScript.</p>
+    </noscript>
+  </body>
+</html>
